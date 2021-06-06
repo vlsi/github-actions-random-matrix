@@ -42,6 +42,38 @@ matrix.addAxis({
       distribution: 'jdkfile',
       url: 'https://corretto.aws/downloads/latest/amazon-corretto-11-x64-linux-jdk.tar.gz'
     },
+    // Microsoft
+    {
+      group: 'Microsoft',
+      version: '11',
+      distribution: 'jdkfile',
+      url: 'https://aka.ms/download-jdk/microsoft-jdk-11.0.11.9.1-linux-x64.tar.gz'
+    },
+    {
+      group: 'Microsoft',
+      version: '16',
+      distribution: 'jdkfile',
+      url: 'https://aka.ms/download-jdk/microsoft-jdk-16.0.1.9.1-linux-x64.tar.gz'
+    },
+    // Liberica
+    {
+      group: 'Liberica',
+      version: '8',
+      distribution: 'jdkfile',
+      url: 'https://download.bell-sw.com/java/8u292+10/bellsoft-jdk8u292+10-linux-amd64.tar.gz'
+    },
+    {
+      group: 'Liberica',
+      version: '11',
+      distribution: 'jdkfile',
+      url: 'https://download.bell-sw.com/java/11.0.11+9/bellsoft-jdk11.0.11+9-linux-amd64.tar.gz'
+    },
+    {
+      group: 'Liberica',
+      version: '16',
+      distribution: 'jdkfile',
+      url: 'https://download.bell-sw.com/java/16.0.1+9/bellsoft-jdk16.0.1+9-linux-amd64.tar.gz'
+    },
   ]
 });
 // Timezone is trival to add, and it might uncover funny bugs. Let's add it
