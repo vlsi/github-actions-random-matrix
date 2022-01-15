@@ -154,6 +154,9 @@ See https://github.com/cbeust/testng/pull/2584
 Sample integrations
 -------------------
 
+Spock: https://github.com/spockframework/spock/pull/1415
+Reload4j: https://github.com/qos-ch/reload4j/pull/16
+JMeter: https://github.com/apache/jmeter/pull/693
 TestNG: https://github.com/cbeust/testng/pull/2584
 
 License
