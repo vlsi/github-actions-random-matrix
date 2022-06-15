@@ -160,6 +160,7 @@ Sample integrations
 * [ ] JMeter: https://github.com/apache/jmeter/pull/693
 * [ ] kSar: https://github.com/vlsi/ksar/pull/251
 * [x] TestNG: https://github.com/cbeust/testng/pull/2584
+* [x] pgjdbc: https://github.com/pgjdbc/pgjdbc/pull/2534
 
 License
 -------
