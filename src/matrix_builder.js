@@ -28,7 +28,7 @@ class Axis {
       }
       return true;
     }
-    return row == filter;
+    return row === filter;
   }
 
   pickValue(filter) {
@@ -36,11 +36,11 @@ class Axis {
     if (filter) {
       values = values.filter(v => Axis.matches(v, filter));
     }
-    if (values.length == 0) {
+    if (values.length === 0) {
       const filterStr = typeof filter === 'string' ? filter.toString() : JSON.stringify(filter);
       throw Error(`No values produces for axis '${this.name}' from ${JSON.stringify(this.values)}, filter=${filterStr}`);
     }
-    if (values.length == 1) {
+    if (values.length === 1) {
       return values[0];
     }
     if (this.uniform) {
