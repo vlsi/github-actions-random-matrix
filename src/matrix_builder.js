@@ -69,10 +69,18 @@ class MatrixBuilder {
     this.includes = [];
   }
 
+  /**
+   * Specifies include filter (all the generated rows would comply with all the include filters)
+   * @param filter
+   */
   include(filter) {
     this.includes.push(filter);
   }
 
+  /**
+   * Specifies exclude filter (e.g. exclude a forbidden combination)
+   * @param filter
+   */
   exclude(filter) {
     this.excludes.push(filter);
   }
@@ -86,6 +94,16 @@ class MatrixBuilder {
 
   setNamePattern(names) {
     this.namePattern = names;
+  }
+
+  /**
+   * Returns true if the row matches the include and exclude filters.
+   * @param row input row
+   * @returns {boolean}
+   */
+  matches(row) {
+    return (this.excludes.length === 0 || !this.excludes.find(f => Axis.matches(row, f))) &&
+           (this.includes.length === 0 || this.includes.find(f => Axis.matches(row, f)));
   }
 
   /**
@@ -114,8 +132,7 @@ class MatrixBuilder {
           }),
         {}
       );
-      if (this.excludes.length > 0 && this.excludes.find(f => Axis.matches(res, f)) ||
-        this.includes.length > 0 && !this.includes.find(f => Axis.matches(res, f))) {
+      if (!this.matches(res)) {
         continue;
       }
       const key = JSON.stringify(res);
@@ -143,6 +160,64 @@ class MatrixBuilder {
       this.generateRow(filter);
     }
     return this.rows;
+  }
+
+  /**
+   * Computes the number of all the possible combinations.
+   * @returns {{bad: number, good: number}}
+   */
+  summary() {
+   let position = -1;
+   let indices = [];
+   let values = {};
+   const axes = this.axes;
+   function resetValuesUpTo(nextPosition) {
+     for(let i=0; i<nextPosition; i++) {
+       const axis = axes[i];
+       values[axis.name] = axis.values[0];
+       indices[i] = 1; // next index
+     }
+     position = 0;
+   }
+
+   function nextAvailablePosition() {
+    let size = axes.length;
+    for (let i = position; i < size; i++) {
+      if (indices[i] < axes[i].values.length) {
+        return i;
+      }
+    }
+    return -1;
+   }
+   // The first initialization of the values
+   resetValuesUpTo(this.axes.length);
+   let good = 0;
+   let bad = 0;
+   while (true) {
+     if (indices[position] < this.axes[position].values.length) {
+       // Advance iterator at the current position if possible
+       const axis = this.axes[position];
+       values[axis.name] = axis.values[indices[position]];
+       indices[position]++;
+     } else {
+       // Advance the next iterator, and reset [0..nextPosition)
+       position++;
+       let nextPosition = nextAvailablePosition();
+       if (nextPosition === -1) {
+         break;
+       }
+       const axis = this.axes[nextPosition];
+       values[axis.name] = axis.values[indices[nextPosition]];
+       indices[nextPosition]++;
+       resetValuesUpTo(nextPosition);
+     }
+     if (this.matches(values)) {
+       good++;
+     } else {
+       bad++;
+     }
+   }
+   return {good: good, bad: bad};
   }
 }
 
