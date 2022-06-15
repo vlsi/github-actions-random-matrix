@@ -1,5 +1,6 @@
 // License: Apache-2.0
 // Copyright Vladimir Sitnikov, 2021
+// See https://github.com/vlsi/github-actions-random-matrix
 
 class Axis {
   constructor({name, title, values}) {
