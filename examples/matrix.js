@@ -8,74 +8,42 @@
 let {MatrixBuilder} = require('./matrix_builder');
 const matrix = new MatrixBuilder();
 
-// jdk axis defines Java distribution to use in the CI
+
+// Some of the filter conditions might become unsatisfiable, and by default
+// the matrix would ignore that.
+// For instance, SCRAM requires PostgreSQL 10+, so if you ask
+// matrix.generateRow({pg_version: '9.0'}), then it won't generate a row
+// That behaviour is useful for PR testing. For instance, if you want to test only SCRAM=yes
+// cases, then just comment out "value: no" in SCRAM axis, and the matrix would yield the matching
+// parameters.
+// However, if you add new testing parameters, you might want un-comment the following line
+// to notice if you accidentally introduce unsatisfiable conditions.
+// matrix.failOnUnsatisfiableFilters(true);
+
 matrix.addAxis({
-  name: 'jdk',
-  // job name should be coincise, and this function produces the name part that describes jdk value
-  title: x => x.version + ', ' + x.group,
-  // The values are just an array. They can be written as literals or computed on the fly
+  name: 'java_distribution',
   values: [
-    // Zulu
-    {group: 'Zulu', version: '8', distribution: 'zulu'},
-    {group: 'Zulu', version: '11', distribution: 'zulu'},
-    {group: 'Zulu', version: '16', distribution: 'zulu'},
-
-    // Adopt
-    {group: 'Adopt Hotspot', version: '8', distribution: 'adopt-hotspot'},
-    {group: 'Adopt Hotspot', version: '11', distribution: 'adopt-hotspot'},
-
-    // Adopt OpenJ9
-    // TODO: Replace these hard coded versions with something that dynamically picks the most recent
-    {group: 'Adopt OpenJ9', version: '8', distribution: 'adopt-openj9'},
-    {group: 'Adopt OpenJ9', version: '11', distribution: 'adopt-openj9'},
-
-    // Amazon Corretto
-    {
-      group: 'Corretto',
-      version: '8',
-      distribution: 'jdkfile',
-      url: 'https://corretto.aws/downloads/latest/amazon-corretto-8-x64-linux-jdk.tar.gz'
-    },
-    {
-      group: 'Corretto',
-      version: '11',
-      distribution: 'jdkfile',
-      url: 'https://corretto.aws/downloads/latest/amazon-corretto-11-x64-linux-jdk.tar.gz'
-    },
-    // Microsoft
-    {
-      group: 'Microsoft',
-      version: '11',
-      distribution: 'jdkfile',
-      url: 'https://aka.ms/download-jdk/microsoft-jdk-11.0.11.9.1-linux-x64.tar.gz'
-    },
-    {
-      group: 'Microsoft',
-      version: '16',
-      distribution: 'jdkfile',
-      url: 'https://aka.ms/download-jdk/microsoft-jdk-16.0.1.9.1-linux-x64.tar.gz'
-    },
-    // Liberica
-    {
-      group: 'Liberica',
-      version: '8',
-      distribution: 'jdkfile',
-      url: 'https://download.bell-sw.com/java/8u292+10/bellsoft-jdk8u292+10-linux-amd64.tar.gz'
-    },
-    {
-      group: 'Liberica',
-      version: '11',
-      distribution: 'jdkfile',
-      url: 'https://download.bell-sw.com/java/11.0.11+9/bellsoft-jdk11.0.11+9-linux-amd64.tar.gz'
-    },
-    {
-      group: 'Liberica',
-      version: '16',
-      distribution: 'jdkfile',
-      url: 'https://download.bell-sw.com/java/16.0.1+9/bellsoft-jdk16.0.1+9-linux-amd64.tar.gz'
-    },
+    'zulu',
+    'temurin',
+    'liberica',
+    'microsoft',
   ]
 });
+
+// TODO: support different JITs (see https://github.com/actions/setup-java/issues/279)
+matrix.addAxis({name: 'jit', title: '', values: ['hotspot']});
+
+matrix.addAxis({
+  name: 'java_version',
+  title: x => 'Java ' + x,
+  // Strings allow versions like 18-ea
+  values: [
+    '8',
+    '11',
+    '17',
+  ]
+});
+
 // Timezone is trival to add, and it might uncover funny bugs. Let's add it
 matrix.addAxis({
   name: 'tz',
@@ -121,20 +89,22 @@ matrix.addAxis({
 });
 
 // This specifices the order of axes in CI job name (individual titles would be joined with a comma)
-matrix.setNamePattern(['jdk', 'hash', 'os', 'tz', 'locale']);
+matrix.setNamePattern(['java_version', 'java_distribution', 'hash', 'os', 'tz', 'locale']);
 
+// Microsoft Java has no distribution for 8
+matrix.exclude({java_distribution: 'microsoft', java_version: '8'});
 // TODO: figure out how "same hashcode" could be configured in OpenJ9
 // -XX:hashCode=2 does not work for openj9, so we make sure matrix builder would never generate that combination
 matrix.exclude({hash: {value: 'same'}, jdk: {distribution: 'adopt-openj9'}});
-// For now, jdkfile distributions are for linux only, so we exclude jdkfile+windows and jdkfile+macos combinations
-matrix.exclude({jdk: {distribution: 'jdkfile'}, os: ['windows-latest', 'macos-latest']});
 // Ensure at least one job with "same" hashcode exists
 matrix.generateRow({hash: {value: 'same'}});
 // Ensure at least one windows and at least one linux job is present (macos is almost the same as linux)
 matrix.generateRow({os: 'windows-latest'});
 matrix.generateRow({os: 'ubuntu-latest'});
-// Ensure there will be at least one job with Java 8
-matrix.generateRow({jdk: {version: 8}});
+// Ensure there will be at least one job with minimal supported Java
+matrix.generateRow({java_version: matrix.axisByName.java_version.values[0]});
+// Ensure there will be at least one job with the latest Java
+matrix.generateRow({java_version: matrix.axisByName.java_version.values.slice(-1)[0]});
 const include = matrix.generateRows(process.env.MATRIX_JOBS || 5);
 if (include.length === 0) {
   throw new Error('Matrix list is empty');
