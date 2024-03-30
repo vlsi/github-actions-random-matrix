@@ -88,7 +88,7 @@ matrix.addAxis({
   ]
 });
 
-// This specifices the order of axes in CI job name (individual titles would be joined with a comma)
+// This specifies the order of axes in CI job name (individual titles would be joined with a comma)
 matrix.setNamePattern(['java_version', 'java_distribution', 'hash', 'os', 'tz', 'locale']);
 
 // Microsoft Java has no distribution for 8
@@ -109,7 +109,7 @@ const include = matrix.generateRows(process.env.MATRIX_JOBS || 5);
 if (include.length === 0) {
   throw new Error('Matrix list is empty');
 }
-// Sort jobs by name, however, numeric parts are sorted approrpiately
+// Sort jobs by name, however, numeric parts are sorted appropriately
 // For instance, 'windows 8' would come before 'windows 11'
 include.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
 // Compute some of the resulting fields. For instance, here we generate "extra jvmargs" based on hash and locale axes
