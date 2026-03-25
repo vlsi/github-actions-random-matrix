@@ -1,19 +1,25 @@
 About
 =====
 
-Generate GitHub Actions matrix on the fly based on your constraints.
+Generate randomized GitHub Actions matrices with pairwise coverage and constraint support.
+
+Install
+-------
+
+```sh
+npm install github-actions-random-matrix
+```
 
 Usage
 -----
 
-Copy [matrix_builder.js](src/matrix_builder.js) to your repository as `.github/workflows/matrix_builder.js`
+Create `.github/workflows/matrix.mjs`:
 
-Add `.github/workflows/matrix.js` as follows (see sample [matrix.js](examples/matrix.js)):
+```js
+import { createGitHubMatrixBuilder } from 'github-actions-random-matrix/github';
 
-```javascript
-let {MatrixBuilder} = require('./matrix_builder');
-const matrix = new MatrixBuilder();
-// Add axes for the matrix
+const { matrix } = createGitHubMatrixBuilder();
+
 matrix.addAxis({
   name: 'tz',
   values: [
@@ -22,6 +28,7 @@ matrix.addAxis({
     'UTC'
   ]
 });
+
 matrix.addAxis({
   name: 'os',
   title: x => x.replace('-latest', ''),
@@ -31,6 +38,7 @@ matrix.addAxis({
     'macos-latest'
   ]
 });
+
 matrix.addAxis({
   name: 'locale',
   title: x => x.language + '_' + x.country,
@@ -42,114 +50,72 @@ matrix.addAxis({
   ]
 });
 
-// Configure the order of the fields in job name
 matrix.setNamePattern(['os', 'tz', 'locale']);
 
-// Exclude testing de_DE locale with macos-latest
-matrix.exclude({locale: {language: 'de'}}, {os: ['macos-latest']});
-// Ensure at least one windows and at least one linux job is present (macos is almost the same as linux)
+matrix.exclude({locale: {language: 'de'}, os: 'macos-latest'});
 matrix.generateRow({os: 'windows-latest'});
 matrix.generateRow({os: 'ubuntu-latest'});
 
-// Generate more rows, no duplicates would be generated
-const include = matrix.generateRows(process.env.MATRIX_JOBS || 5);
+const include = matrix.generateRows(Number(process.env.MATRIX_JOBS || 5));
 if (include.length === 0) {
   throw new Error('Matrix list is empty');
 }
-// Sort jobs by name, however, numeric parts are sorted approrpiately
-// For instance, 'windows 8' would come before 'windows 11'
-include.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
 
-console.log(include);
-console.log('::set-output name=matrix::' + JSON.stringify({include}));
+include.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+console.log(JSON.stringify({include}));
 ```
 
-Note: you can test the matrix locally with `node .github/workflows/matrix.js`
+The current `pgjdbc` usage is in [`.github/workflows/matrix.mjs`](https://github.com/pgjdbc/pgjdbc/blob/master/.github/workflows/matrix.mjs).
 
-Configure workflow yml to call the dynamic matrix:
+Workflow example:
 
 ```yaml
 jobs:
   matrix_prep:
-    name: Matrix Preparation
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     env:
-      # Ask matrix.js to produce 7 jobs
       MATRIX_JOBS: 7
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          fetch-depth: 1
+          node-version: 20
+      - run: npm ci
       - id: set-matrix
+        shell: bash
         run: |
-          node .github/workflows/matrix.js
+          matrix_json="$(node .github/workflows/matrix.mjs)"
+          echo "matrix=$matrix_json" >> "$GITHUB_OUTPUT"
 
   build:
     needs: matrix_prep
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix: ${{fromJson(needs.matrix_prep.outputs.matrix)}}
-    name: '${{ matrix.name }}'
+      matrix: ${{ fromJson(needs.matrix_prep.outputs.matrix) }}
+    name: ${{ matrix.name }}
     env:
       TZ: ${{ matrix.tz }}
 ```
 
-In case you wonder, the builder generates the following json:
+API
+---
 
-```javascript
-[
-  {
-    jdk: { group: 'Zulu', version: '8', distribution: 'zulu' },
-    tz: 'UTC',
-    os: 'windows-latest',
-    locale: { language: 'de', country: 'DE' },
-    name: '8, Zulu, same hashcode, windows, UTC, de_DE',
-    testExtraJvmArgs: '-XX:+UnlockExperimentalVMOptions -XX:hashCode=2 -Duser.country=DE -Duser.language=de'
-  },
-  {
-    jdk: {
-      group: 'Adopt Hotspot',
-      version: '11',
-      distribution: 'adopt-hotspot'
-    },
-    tz: 'Pacific/Chatham',
-    os: 'ubuntu-latest',
-    locale: { language: 'ru', country: 'RU' },
-    name: '11, Adopt Hotspot, ubuntu, Pacific/Chatham, ru_RU',
-    testExtraJvmArgs: '-Duser.country=RU -Duser.language=ru'
-  },
-  {
-    jdk: { group: 'Zulu', version: '11', distribution: 'zulu' },
-    tz: 'America/New_York',
-    os: 'ubuntu-latest',
-    locale: { language: 'tr', country: 'TR' },
-    name: '11, Zulu, ubuntu, America/New_York, tr_TR',
-    testExtraJvmArgs: '-Duser.country=TR -Duser.language=tr'
-  }
-]
-```
+`import { MatrixBuilder } from 'github-actions-random-matrix'`
 
+`import { createGitHubMatrixBuilder } from 'github-actions-random-matrix/github'`
 
-Features
---------
+Features:
 
-* Matrix generation is fast (matrix job takes ~5 seconds in total)
-* Random matrix enables to cover unusual cases and keep CI duration reasonable by keeping the limited number of CI jobs
-* Global `exclude` and `include` filters enable to fine tune the matrix (~avoid generating unreasonable combinations)
-* Literal filters: `{os: 'windows-latest'}`
-* Array filters: `{os: ['windows-latest', 'linux-latest']}`
-* Function filters: `{os: x => x>='w'}`
-
-
-Sample output
--------------
-
-See https://github.com/cbeust/testng/pull/2584
-
-<img width="868" height="452" alt="GitHub job matrix with 7 randomized jobs" src="sample_jobs.png"/>
+* Randomized pairwise coverage keeps CI job counts low while exploring more combinations
+* `exclude(...)` forbids invalid combinations
+* `imply(...)` models rules like `windows -> jdk 17`
+* `constrain(...)` supports custom predicates across multiple axes
+* `generateRow(...)` forces important rows to appear
+* `ensureAllAxisValuesCovered(...)` guarantees each value of an axis appears at least once
+* `pairCoverageReport()` reports feasible pair coverage
 
 Sample integrations
 -------------------
@@ -164,13 +130,5 @@ Sample integrations
 
 License
 -------
+
 Apache License 2.0
-
-Change log
-----------
-v1.0
-* Initial release
-
-Author
-------
-Vladimir Sitnikov <sitnikov.vladimir@gmail.com>

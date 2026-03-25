@@ -1,0 +1,38 @@
+{
+  "name": "github-actions-random-matrix",
+  "version": "2.0.0",
+  "description": "Pairwise test matrix generator with constraint support and GitHub Actions integration",
+  "type": "module",
+  "main": "./src/matrix_builder.mjs",
+  "exports": {
+    ".": "./src/matrix_builder.mjs",
+    "./github": "./src/github_matrix_builder.mjs"
+  },
+  "files": [
+    "src/matrix_builder.mjs",
+    "src/github_matrix_builder.mjs",
+    "src/seedrandom.cjs"
+  ],
+  "license": "Apache-2.0",
+  "keywords": [
+    "github-actions",
+    "matrix",
+    "pairwise",
+    "testing",
+    "ci"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vlsi/github-actions-random-matrix"
+  },
+  "homepage": "https://github.com/vlsi/github-actions-random-matrix",
+  "bugs": {
+    "url": "https://github.com/vlsi/github-actions-random-matrix/issues"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}
