@@ -23,15 +23,14 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/vlsi/github-actions-random-matrix"
+    "url": "git+https://github.com/vlsi/github-actions-random-matrix.git"
   },
   "homepage": "https://github.com/vlsi/github-actions-random-matrix",
   "bugs": {
     "url": "https://github.com/vlsi/github-actions-random-matrix/issues"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "engines": {
     "node": ">=16"
