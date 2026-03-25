@@ -1,5 +1,5 @@
 {
-  "name": "github-actions-random-matrix",
+  "name": "@vlsi/github-actions-random-matrix",
   "version": "2.0.0",
   "description": "Pairwise test matrix generator with constraint support and GitHub Actions integration",
   "type": "module",
@@ -28,6 +28,10 @@
   "homepage": "https://github.com/vlsi/github-actions-random-matrix",
   "bugs": {
     "url": "https://github.com/vlsi/github-actions-random-matrix/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "engines": {
     "node": ">=16"

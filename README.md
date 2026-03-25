@@ -7,7 +7,7 @@ Install
 -------
 
 ```sh
-npm install github-actions-random-matrix
+npm install @vlsi/github-actions-random-matrix
 ```
 
 Usage
@@ -16,7 +16,7 @@ Usage
 Create `.github/workflows/matrix.mjs`:
 
 ```js
-import { createGitHubMatrixBuilder } from 'github-actions-random-matrix/github';
+import { createGitHubMatrixBuilder } from '@vlsi/github-actions-random-matrix/github';
 
 const { matrix } = createGitHubMatrixBuilder();
 
@@ -103,9 +103,9 @@ jobs:
 API
 ---
 
-`import { MatrixBuilder } from 'github-actions-random-matrix'`
+`import { MatrixBuilder } from '@vlsi/github-actions-random-matrix'`
 
-`import { createGitHubMatrixBuilder } from 'github-actions-random-matrix/github'`
+`import { createGitHubMatrixBuilder } from '@vlsi/github-actions-random-matrix/github'`
 
 Features:
 
