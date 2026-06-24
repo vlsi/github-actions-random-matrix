@@ -291,16 +291,17 @@ class MatrixBuilder {
    * @param filter object with keys matching axes names
    * @returns {*}
    */
-  generateRow(filter, {warnOnFailure = true} = {}) {
-    this._initPairs();
-    if (filter) {
-      // If matching row already exists, no need to generate more
-      const existing = this.rows.find(v => Axis.matches(v, filter));
-      if (existing) {
-        return existing;
-      }
-    }
-
+  /**
+   * Generates many random candidates matching `filter`, scores each by the
+   * weighted number of new pairs it would cover (plus an optional `bonus`), and
+   * commits the best-scoring one to the matrix. Returns the committed row, or
+   * null if no valid candidate could be produced.
+   *
+   * `bonus(candidate)` lets callers add to the base pair-coverage score, e.g. to
+   * reward rows that also satisfy still-open batch requirements (see
+   * {@link generateRows}).
+   */
+  _addBestRow(filter, bonus) {
     const numCandidates = 1000;
     let bestRow = null;
     let bestScore = -1;
@@ -314,20 +315,40 @@ class MatrixBuilder {
       const key = JSON.stringify(candidate);
       if (this.duplicates.hasOwnProperty(key)) continue;
 
-      const score = this._scoreNewPairs(candidate);
+      let score = this._scoreNewPairs(candidate);
+      if (bonus) {
+        score += bonus(candidate);
+      }
       if (score > bestScore) {
         bestScore = score;
         bestRow = candidate;
       }
     }
 
-    if (bestRow) {
-      const key = JSON.stringify(bestRow);
-      this.duplicates[key] = true;
-      bestRow.name = this._computeName(bestRow);
-      this._markCovered(bestRow);
-      this.rows.push(bestRow);
-      return bestRow;
+    if (!bestRow) {
+      return null;
+    }
+    const key = JSON.stringify(bestRow);
+    this.duplicates[key] = true;
+    bestRow.name = this._computeName(bestRow);
+    this._markCovered(bestRow);
+    this.rows.push(bestRow);
+    return bestRow;
+  }
+
+  generateRow(filter, {warnOnFailure = true} = {}) {
+    this._initPairs();
+    if (filter) {
+      // If matching row already exists, no need to generate more
+      const existing = this.rows.find(v => Axis.matches(v, filter));
+      if (existing) {
+        return existing;
+      }
+    }
+
+    const row = this._addBestRow(filter, null);
+    if (row) {
+      return row;
     }
 
     const filterStr = typeof filter === 'string' ? filter.toString() : JSON.stringify(filter);
@@ -345,14 +366,156 @@ class MatrixBuilder {
     }
   }
 
-  generateRows(maxRows, filter) {
+  /**
+   * Returns a filter for every value of an axis, as a list suitable for the
+   * `require` option of {@link generateRows}. For example,
+   * `allAxisValues('ssl')` returns `[{ssl: <value0>}, {ssl: <value1>}, ...]`,
+   * the batch equivalent of {@link ensureAllAxisValuesCovered}.
+   */
+  allAxisValues(axisName) {
+    return this.axisByName[axisName].values.map(value => ({[axisName]: value}));
+  }
+
+  /**
+   * Normalizes `require` entries to `{filter, tag}`. A bare filter object stays
+   * a filter; a `{filter, tag}` wrapper is passed through.
+   */
+  _normalizeRequirements(specs) {
+    return specs.map(spec => {
+      if (spec && typeof spec === 'object' && !Array.isArray(spec)
+          && ('filter' in spec || 'tag' in spec)) {
+        return {filter: spec.filter, tag: spec.tag};
+      }
+      return {filter: spec, tag: undefined};
+    });
+  }
+
+  /**
+   * Number of axes a requirement filter pins. More pinned axes => more specific,
+   * so it should anchor its own row rather than hope to be covered incidentally.
+   */
+  _filterKeyCount(filter) {
+    return filter && typeof filter === 'object' && !Array.isArray(filter)
+      ? Object.keys(filter).length
+      : 1;
+  }
+
+  /**
+   * Removes from `pending` every requirement that some existing row already
+   * satisfies, firing its `tag(row)` callback once. Mutates `pending`.
+   */
+  _resolveSatisfied(pending) {
+    for (let k = pending.length - 1; k >= 0; k--) {
+      const req = pending[k];
+      const row = this.rows.find(r => Axis.matches(r, req.filter));
+      if (row) {
+        if (req.tag) {
+          req.tag(row);
+        }
+        pending.splice(k, 1);
+      }
+    }
+  }
+
+  /**
+   * Generates rows until `maxRows` is reached.
+   *
+   * With no options (or a legacy filter object) this is the original pairwise
+   * fill: each new row maximizes uncovered-pair coverage.
+   *
+   * With `{require: [...]}` the listed combinations become a batch of hard
+   * requirements. The result is guaranteed to contain a row matching each one
+   * (subject to feasibility and the `maxRows` budget), and rows are chosen
+   * jointly: a single row covers as many still-open requirements as it can
+   * before the leftover budget is spent on plain pairwise coverage. Unlike
+   * calling generateRow() once per requirement, the outcome does not depend on
+   * the order of the list, and the job count is `maxRows`, not an emergent
+   * function of that order.
+   *
+   * Each `require` entry is either a filter (`{ssl: {value: 'yes'}}`) or a
+   * `{filter, tag}` object whose `tag(row)` is called with the row that ends up
+   * satisfying it — handy for marking a specific job without searching the
+   * result again, e.g. a single coverage job:
+   *   {filter: {os: {value: 'ubuntu-latest'}, ...}, tag: r => r.collectCoverage = true}
+   *
+   * Rows generated earlier (e.g. a pinned row from generateRow()) count toward
+   * both the budget and requirement satisfaction.
+   *
+   * @param {number} maxRows
+   * @param {object} [options] `{require, fill}`, or a legacy fill filter
+   * @returns {Array} the generated rows
+   */
+  generateRows(maxRows, options) {
     this._initPairs();
+
+    let requireSpecs = [];
+    let fillFilter;
+    if (options && (options.require || options.fill)) {
+      requireSpecs = options.require || [];
+      fillFilter = options.fill;
+    } else {
+      // Backward compatible: generateRows(maxRows[, filter])
+      fillFilter = options;
+    }
+
+    const pending = this._normalizeRequirements(requireSpecs);
+    const infeasible = [];
+
+    // Pinned / pre-existing rows may already satisfy some requirements.
+    this._resolveSatisfied(pending);
+
+    // A satisfied requirement must outweigh any pair-coverage delta, so packing
+    // requirements into as few rows as possible always wins; ties break on
+    // coverage. This frees the most budget for the plain-coverage fill below.
+    const BONUS = 1000;
+    const requirementBonus = candidate => {
+      let n = 0;
+      for (const req of pending) {
+        if (Axis.matches(candidate, req.filter)) {
+          n++;
+        }
+      }
+      return n * BONUS;
+    };
+
+    // Phase 1: satisfy requirements. Anchor each row on the most specific open
+    // requirement (most pinned axes); the bonus packs the broad ones onto it.
+    while (this.rows.length < maxRows && pending.length > 0) {
+      const anchor = pending.reduce((a, b) =>
+        this._filterKeyCount(b.filter) > this._filterKeyCount(a.filter) ? b : a);
+      const row = this._addBestRow(anchor.filter, requirementBonus);
+      if (!row) {
+        infeasible.push(anchor);
+        pending.splice(pending.indexOf(anchor), 1);
+        continue;
+      }
+      this._resolveSatisfied(pending);
+    }
+
+    // Phase 2: spend the remaining budget on plain pairwise coverage.
     for (let i = 0; this.rows.length < maxRows && i < maxRows; i++) {
-      const row = this.generateRow(filter, {warnOnFailure: false});
+      const row = this.generateRow(fillFilter, {warnOnFailure: false});
       if (!row) {
         break;
       }
     }
+
+    const problems = [];
+    if (infeasible.length > 0) {
+      problems.push(`unsatisfiable: ${infeasible.map(r => JSON.stringify(r.filter)).join(', ')}`);
+    }
+    if (pending.length > 0) {
+      problems.push(`did not fit into ${maxRows} rows: ${pending.map(r => JSON.stringify(r.filter)).join(', ')}`);
+    }
+    if (problems.length > 0) {
+      const msg = `generateRows could not satisfy all requirements (${problems.join('; ')})`;
+      if (this._failOnUnsatisfiableFilters) {
+        throw Error(msg);
+      } else {
+        console.warn(msg);
+      }
+    }
+
     return this.rows;
   }
 

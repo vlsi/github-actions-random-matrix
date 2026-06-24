@@ -230,6 +230,128 @@ describe('generateRows', () => {
   });
 });
 
+describe('generateRows with batch requirements', () => {
+  it('satisfies every required combination within the budget', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    m.generateRows(6, {
+      require: [
+        {os: 'windows'},
+        {os: 'mac'},
+        {jdk: '8'},
+        {jdk: '17'},
+        {mode: 'slow'},
+      ],
+    });
+    assert.ok(m.rows.length <= 6);
+    assert.ok(m.rows.some(r => r.os === 'windows'));
+    assert.ok(m.rows.some(r => r.os === 'mac'));
+    assert.ok(m.rows.some(r => r.jdk === '8'));
+    assert.ok(m.rows.some(r => r.jdk === '17'));
+    assert.ok(m.rows.some(r => r.mode === 'slow'));
+  });
+
+  it('is independent of requirement order', () => {
+    const reqs = [
+      {os: 'windows'}, {os: 'mac'}, {os: 'linux'},
+      {jdk: '8'}, {jdk: '11'}, {jdk: '17'},
+      {mode: 'fast'}, {mode: 'slow'},
+    ];
+    const covered = m => ({
+      os: new Set(m.rows.map(r => r.os)),
+      jdk: new Set(m.rows.map(r => r.jdk)),
+      mode: new Set(m.rows.map(r => r.mode)),
+    });
+
+    const a = buildSimpleMatrix(createTestRng(7));
+    a.generateRows(8, {require: reqs});
+    const b = buildSimpleMatrix(createTestRng(7));
+    b.generateRows(8, {require: reqs.slice().reverse()});
+
+    // Both orders must cover all the required values (order does not drop any).
+    for (const m of [a, b]) {
+      const c = covered(m);
+      assert.deepEqual(c.os, new Set(['linux', 'windows', 'mac']));
+      assert.deepEqual(c.jdk, new Set(['8', '11', '17']));
+      assert.deepEqual(c.mode, new Set(['fast', 'slow']));
+    }
+  });
+
+  it('packs broad requirements into the floor number of rows', () => {
+    // os and jdk each have 3 values, mode has 2. A single row cannot hold two
+    // values of the same axis, so the floor is 3 rows: they can still carry
+    // os={linux,windows,mac}, jdk={8,11,17} and mode={fast,slow} together.
+    // With maxRows == floor there is no leftover budget for a coverage fill,
+    // so this asserts the packing alone fits everything.
+    const m = buildSimpleMatrix(createTestRng());
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(message);
+    try {
+      m.generateRows(3, {
+        require: [...m.allAxisValues('os'), ...m.allAxisValues('jdk'), ...m.allAxisValues('mode')],
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.deepEqual(warnings, [], `requirements should fit into 3 rows: ${warnings}`);
+    assert.equal(m.rows.length, 3);
+    assert.deepEqual(new Set(m.rows.map(r => r.os)), new Set(['linux', 'windows', 'mac']));
+    assert.deepEqual(new Set(m.rows.map(r => r.jdk)), new Set(['8', '11', '17']));
+    assert.deepEqual(new Set(m.rows.map(r => r.mode)), new Set(['fast', 'slow']));
+  });
+
+  it('fires tag(row) on the row that satisfies a requirement', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    let tagged = null;
+    m.generateRows(6, {
+      require: [
+        {filter: {os: 'windows', jdk: '17', mode: 'slow'}, tag: r => { tagged = r; }},
+        {os: 'linux'},
+      ],
+    });
+    assert.ok(tagged, 'tag should have fired');
+    assert.equal(tagged.os, 'windows');
+    assert.equal(tagged.jdk, '17');
+    assert.equal(tagged.mode, 'slow');
+    assert.ok(m.rows.includes(tagged), 'tagged row must be part of the matrix');
+  });
+
+  it('counts a pinned generateRow() toward the budget and requirements', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    const pinned = m.generateRow({os: 'windows', jdk: '17', mode: 'slow'});
+    pinned.collectCoverage = true;
+    m.generateRows(6, {require: [{os: 'windows'}, {mode: 'slow'}]});
+
+    // The pin already satisfies {os: windows} and {mode: slow}, so no extra row
+    // is spent on them, and the pin keeps its custom field.
+    const flagged = m.rows.filter(r => r.collectCoverage);
+    assert.equal(flagged.length, 1);
+    assert.equal(flagged[0], pinned);
+  });
+
+  it('warns when requirements do not fit the budget', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(message);
+    try {
+      // os needs 3 distinct rows, but only 2 are allowed.
+      m.generateRows(2, {require: m.allAxisValues('os')});
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(m.rows.length, 2);
+    assert.ok(warnings.some(w => /did not fit/.test(w)), `unexpected warnings: ${warnings}`);
+  });
+
+  it('throws on unsatisfiable requirements when failOnUnsatisfiableFilters is set', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    m.exclude({os: 'windows'});
+    m.failOnUnsatisfiableFilters(true);
+    assert.throws(() => m.generateRows(5, {require: [{os: 'windows'}]}), /unsatisfiable/);
+  });
+});
+
 describe('summary', () => {
   it('counts good and bad combinations', () => {
     const m = buildSimpleMatrix(createTestRng());
