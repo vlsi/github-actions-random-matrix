@@ -1,6 +1,6 @@
 {
   "name": "@vlsi/github-actions-random-matrix",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Pairwise test matrix generator with constraint support and GitHub Actions integration",
   "type": "module",
   "main": "./src/matrix_builder.mjs",
