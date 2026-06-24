@@ -53,10 +53,16 @@ matrix.addAxis({
 matrix.setNamePattern(['os', 'tz', 'locale']);
 
 matrix.exclude({locale: {language: 'de'}, os: 'macos-latest'});
-matrix.generateRow({os: 'windows-latest'});
-matrix.generateRow({os: 'ubuntu-latest'});
 
-const include = matrix.generateRows(Number(process.env.MATRIX_JOBS || 5));
+// Pass the combinations you care about as a batch. generateRows guarantees a row
+// for each one, fixes the job count regardless of list order, and fills the rest
+// of the budget with pairwise coverage.
+const include = matrix.generateRows(Number(process.env.MATRIX_JOBS || 5), {
+  require: [
+    ...matrix.allAxisValues('os'), // run every OS at least once
+    {tz: 'UTC'},
+  ],
+});
 if (include.length === 0) {
   throw new Error('Matrix list is empty');
 }
@@ -109,13 +115,45 @@ API
 
 Features:
 
+* `generateRows(n, {require})` is the main entry point: it generates the combinations you require as a batch and packs them into a fixed job count, independent of list order
+* `allAxisValues(axis)` expands an axis into a `require` list, so every value runs at least once
 * Randomized pairwise coverage keeps CI job counts low while exploring more combinations
 * `exclude(...)` forbids invalid combinations
 * `imply(...)` models rules like `windows -> jdk 17`
 * `constrain(...)` supports custom predicates across multiple axes
-* `generateRow(...)` forces important rows to appear
-* `ensureAllAxisValuesCovered(...)` guarantees each value of an axis appears at least once
 * `pairCoverageReport()` reports feasible pair coverage
+* `generateRow(...)` and `ensureAllAxisValuesCovered(...)` force individual rows imperatively, for the rare cases in [Forcing individual rows](#forcing-individual-rows)
+
+Batch requirements
+------------------
+
+`generateRows(n, {require: [...]})` is the main way to drive the matrix. It guarantees a row for each required combination, packs them into as few rows as possible, and spends the rest of the `n`-row budget on pairwise coverage. The job count is `n`, and the result does not depend on the order of the list.
+
+A `require` entry is either a filter or a `{filter, tag}` pair. `tag(row)` runs with the row that satisfies the requirement, so you can mark a job without searching the result again. For example, to collect code coverage on a single job pinned to a specific combination:
+
+```js
+const include = matrix.generateRows(Number(process.env.MATRIX_JOBS || 5), {
+  require: [
+    {filter: {os: 'ubuntu-latest', pg_version: '18', ssl: 'yes', scram: 'yes'},
+     tag: row => { row.collectCoverage = true; }},
+    {query_mode: 'simple'},
+    ...matrix.allAxisValues('ssl'),
+    ...matrix.allAxisValues('gss'),
+  ],
+});
+```
+
+When a requirement cannot fit the budget, or is unsatisfiable, `generateRows` warns. Call `failOnUnsatisfiableFilters(true)` to turn that into an error.
+
+Forcing individual rows
+-----------------------
+
+Before batch requirements the matrix was driven one row at a time. These calls remain for the rare cases that still want them:
+
+* `generateRow(filter)` adds a single row and returns it (or an existing match), so you can keep a handle and set fields on it. The `tag` callback above covers most of this; reach for `generateRow` for a one-off you inspect locally.
+* `ensureAllAxisValuesCovered(axis)` is the imperative form of spreading `...matrix.allAxisValues(axis)` into a `require` list.
+
+Prefer `generateRows({require})`. A sequence of imperative calls makes both the job count and the coverage depend on call order, because a row generated for an early filter may satisfy a later one by chance.
 
 Sample integrations
 -------------------
