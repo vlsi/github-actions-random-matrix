@@ -16,6 +16,8 @@ Usage
 Create `.github/workflows/matrix.mjs`:
 
 ```js
+import { appendFileSync } from 'node:fs';
+import { EOL } from 'node:os';
 import { createGitHubMatrixBuilder } from '@vlsi/github-actions-random-matrix/github';
 
 const { matrix } = createGitHubMatrixBuilder();
@@ -68,10 +70,21 @@ if (include.length === 0) {
 }
 
 include.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
-console.log(JSON.stringify({include}));
+console.log(include);
+
+// Hand the matrix to the next job. Writing $GITHUB_OUTPUT directly keeps the RNG-seed
+// log out of the captured value, and the heredoc form is multiline-safe.
+const githubOutput = process.env.GITHUB_OUTPUT;
+if (githubOutput) {
+  appendFileSync(
+    githubOutput,
+    `matrix<<MATRIX_BODY${EOL}${JSON.stringify({include})}${EOL}MATRIX_BODY${EOL}`,
+    {encoding: 'utf8'}
+  );
+}
 ```
 
-The current `pgjdbc` usage is in [`.github/workflows/matrix.mjs`](https://github.com/pgjdbc/pgjdbc/blob/master/.github/workflows/matrix.mjs).
+A complete, runnable example with weighted axes and derived fields is in [`examples/matrix.mjs`](examples/matrix.mjs). The current `pgjdbc` usage is in [`.github/workflows/matrix.mjs`](https://github.com/pgjdbc/pgjdbc/blob/master/.github/workflows/matrix.mjs).
 
 Workflow example:
 
@@ -90,10 +103,7 @@ jobs:
           node-version: 20
       - run: npm ci
       - id: set-matrix
-        shell: bash
-        run: |
-          matrix_json="$(node .github/workflows/matrix.mjs)"
-          echo "matrix=$matrix_json" >> "$GITHUB_OUTPUT"
+        run: node .github/workflows/matrix.mjs
 
   build:
     needs: matrix_prep
