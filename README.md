@@ -16,9 +16,7 @@ Usage
 Create `.github/workflows/matrix.mjs`:
 
 ```js
-import { appendFileSync } from 'node:fs';
-import { EOL } from 'node:os';
-import { createGitHubMatrixBuilder } from '@vlsi/github-actions-random-matrix/github';
+import { createGitHubMatrixBuilder, setGitHubOutput } from '@vlsi/github-actions-random-matrix/github';
 
 const { matrix } = createGitHubMatrixBuilder();
 
@@ -72,16 +70,9 @@ if (include.length === 0) {
 include.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
 console.log(include);
 
-// Hand the matrix to the next job. Writing $GITHUB_OUTPUT directly keeps the RNG-seed
-// log out of the captured value, and the heredoc form is multiline-safe.
-const githubOutput = process.env.GITHUB_OUTPUT;
-if (githubOutput) {
-  appendFileSync(
-    githubOutput,
-    `matrix<<MATRIX_BODY${EOL}${JSON.stringify({include})}${EOL}MATRIX_BODY${EOL}`,
-    {encoding: 'utf8'}
-  );
-}
+// setGitHubOutput writes the matrix to $GITHUB_OUTPUT with a random, multiline-safe
+// delimiter, and no-ops outside GitHub Actions.
+setGitHubOutput('matrix', {include});
 ```
 
 A complete, runnable example with weighted axes and derived fields is in [`examples/matrix.mjs`](examples/matrix.mjs). The current `pgjdbc` usage is in [`.github/workflows/matrix.mjs`](https://github.com/pgjdbc/pgjdbc/blob/master/.github/workflows/matrix.mjs).
@@ -131,7 +122,8 @@ Features:
 * `exclude(...)` forbids invalid combinations
 * `imply(...)` models rules like `windows -> jdk 17`
 * `constrain(...)` supports custom predicates across multiple axes
-* `pairCoverageReport()` reports feasible pair coverage
+* `pairCoverageReport()` reports feasible pair coverage; run the example with `--coverage` to print it
+* `setGitHubOutput(name, value)` (from `/github`) hands the matrix to a later job via `$GITHUB_OUTPUT`, with a random, multiline-safe delimiter
 * `generateRow(...)` and `ensureAllAxisValuesCovered(...)` force individual rows imperatively, for the rare cases in [Forcing individual rows](#forcing-individual-rows)
 
 Batch requirements
