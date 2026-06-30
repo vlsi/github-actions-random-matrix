@@ -6,9 +6,7 @@
 
 // createGitHubMatrixBuilder seeds the RNG so a run is reproducible: it derives the seed
 // from the PR number (or RNG_SEED) and logs it to the job log and the step summary.
-import { appendFileSync } from 'node:fs';
-import { EOL } from 'node:os';
-import { createGitHubMatrixBuilder } from '@vlsi/github-actions-random-matrix/github';
+import { createGitHubMatrixBuilder, setGitHubOutput } from '@vlsi/github-actions-random-matrix/github';
 
 const { matrix } = createGitHubMatrixBuilder();
 
@@ -131,16 +129,15 @@ include.forEach(v => {
   delete v.hash;
 });
 
-// Print the matrix to the job log for debugging.
-console.log(include);
-
-// Hand the matrix to the next job via $GITHUB_OUTPUT. The heredoc form is multiline-safe,
-// and writing the file directly keeps the RNG-seed log out of the captured value.
-const githubOutput = process.env.GITHUB_OUTPUT;
-if (githubOutput) {
-  appendFileSync(
-    githubOutput,
-    `matrix<<MATRIX_BODY${EOL}${JSON.stringify({include})}${EOL}MATRIX_BODY${EOL}`,
-    {encoding: 'utf8'}
-  );
+// Run with --coverage to preview pair coverage and tune MATRIX_JOBS without emitting
+// the matrix:  node .github/workflows/matrix.mjs --coverage
+if (process.argv.includes('--coverage')) {
+  const coverage = matrix.pairCoverageReport();
+  console.log(`Pair coverage: ${coverage.covered}/${coverage.total} (${coverage.percentage}%), weighted ${coverage.weightPercentage}%`);
+} else {
+  // Print the matrix to the job log for debugging.
+  console.log(include);
+  // Hand the matrix to the next job. setGitHubOutput writes $GITHUB_OUTPUT with a random,
+  // multiline-safe delimiter, and no-ops when the variable is unset (e.g. running locally).
+  setGitHubOutput('matrix', {include});
 }

@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { createGitHubMatrixBuilder, MatrixBuilder, Axis } from '../src/github_matrix_builder.mjs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createGitHubMatrixBuilder, setGitHubOutput, MatrixBuilder, Axis } from '../src/github_matrix_builder.mjs';
 
 describe('createGitHubMatrixBuilder', () => {
   it('returns matrix and random', () => {
@@ -33,5 +36,39 @@ describe('createGitHubMatrixBuilder', () => {
   it('re-exports Axis and MatrixBuilder', () => {
     assert.equal(typeof Axis.matches, 'function');
     assert.equal(typeof MatrixBuilder, 'function');
+  });
+});
+
+describe('setGitHubOutput', () => {
+  it('writes a heredoc block with a random delimiter for an object value', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'matrix-out-'));
+    try {
+      const file = join(dir, 'output');
+      const ok = setGitHubOutput('matrix', {include: [{a: 1}]}, {output: file});
+      assert.equal(ok, true);
+      const content = readFileSync(file, 'utf8');
+      const match = content.match(/^matrix<<(ghadelimiter_[0-9a-f]+)\r?\n([\s\S]*?)\r?\n\1\r?\n$/);
+      assert.ok(match, `unexpected output: ${content}`);
+      assert.deepEqual(JSON.parse(match[2]), {include: [{a: 1}]});
+    } finally {
+      rmSync(dir, {recursive: true, force: true});
+    }
+  });
+
+  it('writes string values verbatim', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'matrix-out-'));
+    try {
+      const file = join(dir, 'output');
+      setGitHubOutput('greeting', 'hello', {output: file});
+      const content = readFileSync(file, 'utf8');
+      const match = content.match(/^greeting<<(ghadelimiter_[0-9a-f]+)\r?\nhello\r?\n\1\r?\n$/);
+      assert.ok(match, `unexpected output: ${content}`);
+    } finally {
+      rmSync(dir, {recursive: true, force: true});
+    }
+  });
+
+  it('returns false when no output target is set', () => {
+    assert.equal(setGitHubOutput('matrix', {include: []}, {output: ''}), false);
   });
 });
