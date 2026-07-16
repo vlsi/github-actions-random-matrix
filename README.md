@@ -116,7 +116,7 @@ API
 
 Features:
 
-* `generateRows(n, {require})` is the main entry point: it generates the combinations you require as a batch and packs them into a fixed job count, independent of list order
+* `generateRows(n, {require})` is the main entry point: it generates the combinations you require as a batch and fits them into a fixed job count, independent of list order
 * `allAxisValues(axis)` expands an axis into a `require` list, so every value runs at least once
 * Randomized pairwise coverage keeps CI job counts low while exploring more combinations
 * `exclude(...)` forbids invalid combinations
@@ -129,7 +129,9 @@ Features:
 Batch requirements
 ------------------
 
-`generateRows(n, {require: [...]})` is the main way to drive the matrix. It guarantees a row for each required combination, packs them into as few rows as possible, and spends the rest of the `n`-row budget on pairwise coverage. The job count is `n`, and the result does not depend on the order of the list.
+`generateRows(n, {require: [...]})` is the main way to drive the matrix. It guarantees a row for each required combination, then spends the rest of the `n`-row budget on pairwise coverage. The job count is `n`, and the result does not depend on the order of the list.
+
+`requirePacking` controls how requirements share rows. The default, `'when-needed'`, merges two requirements into one row only when the budget is too tight to give each its own row, so required values pair with more varied partners. Set it to `'always'` to pack every compatible requirement as tightly as possible, which frees the most rows for pairwise coverage. Both modes keep the `n`-row budget and the per-requirement guarantee.
 
 A `require` entry is either a filter or a `{filter, tag}` pair. `tag(row)` runs with the row that satisfies the requirement, so you can mark a job without searching the result again. For example, to collect code coverage on a single job pinned to a specific combination:
 

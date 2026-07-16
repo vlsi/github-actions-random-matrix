@@ -300,6 +300,84 @@ describe('generateRows with batch requirements', () => {
     assert.deepEqual(new Set(m.rows.map(r => r.mode)), new Set(['fast', 'slow']));
   });
 
+  it('spreads requirements instead of pairing them when the budget has slack', () => {
+    // Requirements {a:1},{a:4},{b:a},{b:b} pack into a floor of 2 rows, which
+    // forces the required values to share rows (1 with a, 4 with b). With a
+    // looser budget the packing bonus stays off, so each requirement can anchor
+    // its own row and pick a random partner on the other axis. Verify that the
+    // rows satisfying the a-requirements then carry non-required b-values too
+    // (issue #11). The b-value is read off the tagged row that satisfied each
+    // a-requirement, not off the whole matrix: pairwise-fill rows also combine
+    // a:1/a:4 with free b-values under the old always-paired behavior, so only
+    // the requirement-satisfying rows tell the two implementations apart.
+    const buildAB = random => {
+      const m = new MatrixBuilder({random});
+      m.addAxis({name: 'a', values: [1, 2, 3, 4]});
+      m.addAxis({name: 'b', values: ['a', 'b', 'c', 'd', 'e', 'f']});
+      m.setNamePattern(['a', 'b']);
+      return m;
+    };
+    const anchorPartners = new Set();
+    for (let seed = 1; seed <= 12; seed++) {
+      const m = buildAB(createTestRng(seed));
+      let rowA1, rowA4;
+      m.generateRows(5, {
+        require: [
+          {filter: {a: 1}, tag: r => { rowA1 = r; }},
+          {filter: {a: 4}, tag: r => { rowA4 = r; }},
+          {b: 'a'},
+          {b: 'b'},
+        ],
+      });
+      // The requirements are still guaranteed within the budget.
+      for (const v of ['a', 'b']) assert.ok(m.rows.some(r => r.b === v));
+      assert.ok(rowA1 && rowA1.a === 1);
+      assert.ok(rowA4 && rowA4.a === 4);
+      anchorPartners.add(rowA1.b);
+      anchorPartners.add(rowA4.b);
+    }
+    // Across seeds, a row satisfying an a-requirement carries a non-required
+    // b-value at least once. The old behavior always packed a required b-value
+    // onto those rows, so it never reaches c/d/e/f here.
+    assert.ok(['c', 'd', 'e', 'f'].some(v => anchorPartners.has(v)),
+      `a-requirements only ever paired with required b-values: ${[...anchorPartners]}`);
+  });
+
+  it("requirePacking 'always' packs requirements tightly even with budget to spare", () => {
+    // Same setup as the spread test, but 'always' forces the original packing:
+    // every row that satisfies an a-requirement carries a required b-value, so
+    // the anchor rows never reach c/d/e/f no matter the seed.
+    const buildAB = random => {
+      const m = new MatrixBuilder({random});
+      m.addAxis({name: 'a', values: [1, 2, 3, 4]});
+      m.addAxis({name: 'b', values: ['a', 'b', 'c', 'd', 'e', 'f']});
+      m.setNamePattern(['a', 'b']);
+      return m;
+    };
+    for (let seed = 1; seed <= 12; seed++) {
+      const m = buildAB(createTestRng(seed));
+      let rowA1, rowA4;
+      m.generateRows(5, {
+        requirePacking: 'always',
+        require: [
+          {filter: {a: 1}, tag: r => { rowA1 = r; }},
+          {filter: {a: 4}, tag: r => { rowA4 = r; }},
+          {b: 'a'},
+          {b: 'b'},
+        ],
+      });
+      assert.ok(['a', 'b'].includes(rowA1.b), `a:1 packed with ${rowA1.b}`);
+      assert.ok(['a', 'b'].includes(rowA4.b), `a:4 packed with ${rowA4.b}`);
+    }
+  });
+
+  it('rejects an unknown requirePacking value', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    assert.throws(
+      () => m.generateRows(5, {require: [{os: 'linux'}], requirePacking: 'sometimes'}),
+      /Invalid requirePacking/);
+  });
+
   it('fires tag(row) on the row that satisfies a requirement', () => {
     const m = buildSimpleMatrix(createTestRng());
     let tagged = null;

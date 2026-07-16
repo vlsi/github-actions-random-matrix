@@ -431,17 +431,18 @@ class MatrixBuilder {
   }
 
   /**
-   * Warns about keys other than `require`/`fill` in a generateRows options bag.
-   * Such keys are almost always typos (e.g. `required`) whose only effect is
-   * that the intended requirements are silently dropped.
+   * Warns about keys other than `require`/`requirePacking`/`fill` in a
+   * generateRows options bag. Such keys are almost always typos (e.g.
+   * `required`) whose only effect is that the intended requirements are
+   * silently dropped.
    */
   _validateOptionKeys(options) {
-    const known = new Set(['require', 'fill']);
+    const known = new Set(['require', 'requirePacking', 'fill']);
     const unknown = Object.keys(options).filter(k => !known.has(k));
     if (unknown.length > 0) {
       this._reportConfigProblem(
         `generateRows ignored unknown option(s) ${unknown.map(k => `'${k}'`).join(', ')}; ` +
-        `supported options are 'require' and 'fill'`);
+        `supported options are 'require', 'requirePacking', and 'fill'`);
     }
   }
 
@@ -475,12 +476,20 @@ class MatrixBuilder {
    *
    * With `{require: [...]}` the listed combinations become a batch of hard
    * requirements. The result is guaranteed to contain a row matching each one
-   * (subject to feasibility and the `maxRows` budget), and rows are chosen
-   * jointly: a single row covers as many still-open requirements as it can
-   * before the leftover budget is spent on plain pairwise coverage. Unlike
-   * calling generateRow() once per requirement, the outcome does not depend on
-   * the order of the list, and the job count is `maxRows`, not an emergent
-   * function of that order.
+   * (subject to feasibility and the `maxRows` budget). Unlike calling
+   * generateRow() once per requirement, the outcome does not depend on the
+   * order of the list, and the job count is `maxRows`, not an emergent function
+   * of that order.
+   *
+   * `requirePacking` controls how requirements share rows; either way the
+   * `maxRows` budget and the per-requirement guarantee hold:
+   *  - `'when-needed'` (default) merges requirements into one row only when the
+   *    remaining budget is too tight to give each its own row. This keeps the
+   *    required values from always being paired with each other, so they
+   *    combine with more varied partners (see issue #11).
+   *  - `'always'` merges every compatible requirement as tightly as possible,
+   *    spending the fewest rows on requirements and leaving the most budget for
+   *    the plain pairwise-coverage fill. This is the original behavior.
    *
    * Each `require` entry is either a filter (`{ssl: {value: 'yes'}}`) or a
    * `{filter, tag}` object whose `tag(row)` is called with the row that ends up
@@ -492,7 +501,10 @@ class MatrixBuilder {
    * both the budget and requirement satisfaction.
    *
    * @param {number} maxRows
-   * @param {object} [options] `{require, fill}`, or a legacy fill filter
+   * @param {object} [options] `{require, requirePacking, fill}`, or a legacy fill filter
+   * @param {Array} [options.require] batch of hard requirements
+   * @param {'when-needed'|'always'} [options.requirePacking='when-needed'] how tightly requirements share rows
+   * @param {object|function} [options.fill] filter applied to the pairwise-coverage fill rows
    * @returns {Array} the generated rows
    */
   generateRows(maxRows, options) {
@@ -500,14 +512,19 @@ class MatrixBuilder {
 
     let requireSpecs = [];
     let fillFilter;
-    if (options && (options.require || options.fill)) {
+    let requirePacking = 'when-needed';
+    if (options && (options.require || options.fill || options.requirePacking)) {
       requireSpecs = options.require || [];
       fillFilter = options.fill;
+      requirePacking = options.requirePacking || 'when-needed';
       this._validateOptionKeys(options);
     } else {
       // Backward compatible: generateRows(maxRows[, filter])
       fillFilter = options;
       this._validateFillFilterKeys(fillFilter);
+    }
+    if (requirePacking !== 'when-needed' && requirePacking !== 'always') {
+      throw new Error(`Invalid requirePacking: ${JSON.stringify(requirePacking)}. Expected 'when-needed' or 'always'.`);
     }
 
     const pending = this._normalizeRequirements(requireSpecs);
@@ -516,9 +533,9 @@ class MatrixBuilder {
     // Pinned / pre-existing rows may already satisfy some requirements.
     this._resolveSatisfied(pending);
 
-    // A satisfied requirement must outweigh any pair-coverage delta, so packing
-    // requirements into as few rows as possible always wins; ties break on
-    // coverage. This frees the most budget for the plain-coverage fill below.
+    // When packing is on, a satisfied requirement must outweigh any pair-coverage
+    // delta, so packing requirements into as few rows as possible always wins;
+    // ties break on coverage.
     const BONUS = 1000;
     const requirementBonus = candidate => {
       let n = 0;
@@ -531,11 +548,20 @@ class MatrixBuilder {
     };
 
     // Phase 1: satisfy requirements. Anchor each row on the most specific open
-    // requirement (most pinned axes); the bonus packs the broad ones onto it.
+    // requirement (most pinned axes). Pack the broad ones onto that anchor when
+    // `requirePacking` is 'always', or (for 'when-needed') only when the
+    // leftover budget is too tight to give every open requirement its own row;
+    // otherwise leave the anchor's other axes to random pair-coverage. Forced
+    // packing always pairs the required values with each other (e.g. it pins
+    // {a:1} to {b:'a'} in the same row), which starves variability, so under
+    // 'when-needed' we pay that price only when the budget makes it unavoidable
+    // (see issue #11).
     while (this.rows.length < maxRows && pending.length > 0) {
       const anchor = pending.reduce((a, b) =>
         this._filterKeyCount(b.filter) > this._filterKeyCount(a.filter) ? b : a);
-      const row = this._addBestRow(anchor.filter, requirementBonus);
+      const mustPack = requirePacking === 'always'
+        || pending.length > maxRows - this.rows.length;
+      const row = this._addBestRow(anchor.filter, mustPack ? requirementBonus : null);
       if (!row) {
         infeasible.push(anchor);
         pending.splice(pending.indexOf(anchor), 1);
