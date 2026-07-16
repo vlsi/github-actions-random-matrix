@@ -350,6 +350,58 @@ describe('generateRows with batch requirements', () => {
     m.failOnUnsatisfiableFilters(true);
     assert.throws(() => m.generateRows(5, {require: [{os: 'windows'}]}), /unsatisfiable/);
   });
+
+  it('warns when the require option is misspelled (e.g. required)', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(message);
+    try {
+      // `required` is not a valid option; it must not be silently dropped.
+      m.generateRows(5, {required: [{os: 'windows'}, {jdk: '17'}]});
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(
+      warnings.some(w => /required/.test(w) && /require/.test(w)),
+      `expected a warning hinting at 'require', got: ${warnings}`);
+  });
+
+  it('warns on a legacy fill filter key that is not an axis name', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(message);
+    try {
+      m.generateRows(3, {oss: 'windows'});
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(
+      warnings.some(w => /oss/.test(w) && /axis/.test(w)),
+      `expected a warning about the unknown axis key, got: ${warnings}`);
+  });
+
+  it('does not warn on a valid legacy fill filter', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(message);
+    try {
+      m.generateRows(3, {os: 'linux'});
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.deepEqual(warnings, [], `unexpected warnings: ${warnings}`);
+    assert.ok(m.rows.every(r => r.os === 'linux'));
+  });
+
+  it('throws on a misspelled option when failOnUnsatisfiableFilters is set', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    m.failOnUnsatisfiableFilters(true);
+    assert.throws(() => m.generateRows(5, {require: [{os: 'linux'}], fil: {}}),
+      /unknown option/);
+  });
 });
 
 describe('summary', () => {
