@@ -418,6 +418,56 @@ class MatrixBuilder {
   }
 
   /**
+   * Reports a configuration problem (e.g. a misspelled option). Warns by
+   * default, or throws when failOnUnsatisfiableFilters(true) has been set, to
+   * match how generateRows escalates its other problems.
+   */
+  _reportConfigProblem(msg) {
+    if (this._failOnUnsatisfiableFilters) {
+      throw Error(msg);
+    } else {
+      console.warn(msg);
+    }
+  }
+
+  /**
+   * Warns about keys other than `require`/`fill` in a generateRows options bag.
+   * Such keys are almost always typos (e.g. `required`) whose only effect is
+   * that the intended requirements are silently dropped.
+   */
+  _validateOptionKeys(options) {
+    const known = new Set(['require', 'fill']);
+    const unknown = Object.keys(options).filter(k => !known.has(k));
+    if (unknown.length > 0) {
+      this._reportConfigProblem(
+        `generateRows ignored unknown option(s) ${unknown.map(k => `'${k}'`).join(', ')}; ` +
+        `supported options are 'require' and 'fill'`);
+    }
+  }
+
+  /**
+   * A legacy fill filter may only key on axis names. Any other key is silently
+   * ignored by the pairwise fill, which looks exactly like the requirements
+   * were dropped — most commonly a misspelled `require` (e.g. `required`), the
+   * top cause of "generateRows ignored my requirements" confusion. Warn instead.
+   */
+  _validateFillFilterKeys(filter) {
+    if (!filter || typeof filter !== 'object' || Array.isArray(filter)) {
+      return;
+    }
+    const unknown = Object.keys(filter).filter(k => !this.axisByName.hasOwnProperty(k));
+    if (unknown.length === 0) {
+      return;
+    }
+    const hint = unknown.some(k => /^(require|fill)/i.test(k))
+      ? `; did you mean generateRows(maxRows, {require: [...]})?`
+      : '';
+    this._reportConfigProblem(
+      `generateRows ignored filter key(s) ${unknown.map(k => `'${k}'`).join(', ')} ` +
+      `that do not match any axis name${hint}`);
+  }
+
+  /**
    * Generates rows until `maxRows` is reached.
    *
    * With no options (or a legacy filter object) this is the original pairwise
@@ -453,9 +503,11 @@ class MatrixBuilder {
     if (options && (options.require || options.fill)) {
       requireSpecs = options.require || [];
       fillFilter = options.fill;
+      this._validateOptionKeys(options);
     } else {
       // Backward compatible: generateRows(maxRows[, filter])
       fillFilter = options;
+      this._validateFillFilterKeys(fillFilter);
     }
 
     const pending = this._normalizeRequirements(requireSpecs);

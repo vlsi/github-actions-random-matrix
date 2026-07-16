@@ -145,6 +145,8 @@ const include = matrix.generateRows(Number(process.env.MATRIX_JOBS || 5), {
 });
 ```
 
+The option is `require` (not `required`). The second argument accepts only `require` and `fill`; an unknown key such as `required` — or a `fill` filter that keys on something other than an axis name — is a common typo whose requirements would otherwise vanish silently, so `generateRows` warns about it. Call `failOnUnsatisfiableFilters(true)` to turn that (and the warnings below) into an error.
+
 When a requirement cannot fit the budget, or is unsatisfiable, `generateRows` warns. Call `failOnUnsatisfiableFilters(true)` to turn that into an error.
 
 Forcing individual rows
