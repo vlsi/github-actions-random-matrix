@@ -371,6 +371,51 @@ describe('generateRows with batch requirements', () => {
     }
   });
 
+  it('varies which requirement is packed when the budget forces pairing', () => {
+    // 4 requirements into 3 rows: two of them must share a row (pigeonhole), so
+    // the packing bonus turns on. A shared row always holds one a-requirement
+    // and one b-requirement, which leaves the other a-requirement a free row and
+    // a random partner. Declaration order alone used to decide who lost the free
+    // row, so {a:1} always anchored row 0 and never reached b=c..f while {a:4}
+    // always did (issue #11). Phase 1 shuffles per seed now, so the roles swap.
+    const buildAB = random => {
+      const m = new MatrixBuilder({random});
+      m.addAxis({name: 'a', values: [1, 2, 3, 4]});
+      m.addAxis({name: 'b', values: ['a', 'b', 'c', 'd', 'e', 'f']});
+      m.setNamePattern(['a', 'b']);
+      return m;
+    };
+    const partners = {1: new Set(), 4: new Set()};
+    const firstRowA = new Set();
+    for (let seed = 1; seed <= 24; seed++) {
+      const m = buildAB(createTestRng(seed));
+      let rowA1, rowA4;
+      m.generateRows(3, {
+        require: [
+          {filter: {a: 1}, tag: r => { rowA1 = r; }},
+          {filter: {a: 4}, tag: r => { rowA4 = r; }},
+          {b: 'a'},
+          {b: 'b'},
+        ],
+      });
+      // A tighter budget must not cost coverage: every requirement still lands.
+      assert.equal(m.rows.length, 3);
+      assert.ok(rowA1 && rowA1.a === 1);
+      assert.ok(rowA4 && rowA4.a === 4);
+      for (const v of ['a', 'b']) assert.ok(m.rows.some(r => r.b === v));
+      partners[1].add(rowA1.b);
+      partners[4].add(rowA4.b);
+      firstRowA.add(m.rows[0].a);
+    }
+    // Neither a-requirement is the one that always loses its free row.
+    for (const a of [1, 4]) {
+      assert.ok(['c', 'd', 'e', 'f'].some(v => partners[a].has(v)),
+        `a:${a} only ever paired with required b-values: ${[...partners[a]]}`);
+    }
+    // Row 0 is no longer pinned to the first declared requirement.
+    assert.ok(firstRowA.size > 1, `row 0 always had a:${[...firstRowA]}`);
+  });
+
   it('rejects an unknown requirePacking value', () => {
     const m = buildSimpleMatrix(createTestRng());
     assert.throws(

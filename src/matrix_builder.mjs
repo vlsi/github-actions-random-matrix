@@ -377,6 +377,18 @@ class MatrixBuilder {
   }
 
   /**
+   * Fisher-Yates shuffle in place, driven by the builder's seeded RNG so the
+   * result stays reproducible for a given seed.
+   */
+  _shuffle(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+      const j = Math.floor(this._random() * (i + 1));
+      [array[i], array[j]] = [array[j], array[i]];
+    }
+    return array;
+  }
+
+  /**
    * Normalizes `require` entries to `{filter, tag}`. A bare filter object stays
    * a filter; a `{filter, tag}` wrapper is passed through.
    */
@@ -528,6 +540,15 @@ class MatrixBuilder {
     }
 
     const pending = this._normalizeRequirements(requireSpecs);
+    // Phase 1 consumes `pending` in order, and that order decides which
+    // requirement anchors a row and which one gets packed onto somebody else's
+    // anchor. A fixed order therefore biases the same requirement into the same
+    // spot on every seed (issue #11), so shuffle before consuming. Warnings
+    // still list requirements as the caller wrote them.
+    const declarationOrder = new Map(pending.map((req, i) => [req, i]));
+    const asDeclared = reqs =>
+      reqs.slice().sort((x, y) => declarationOrder.get(x) - declarationOrder.get(y));
+    this._shuffle(pending);
     const infeasible = [];
 
     // Pinned / pre-existing rows may already satisfy some requirements.
@@ -548,7 +569,8 @@ class MatrixBuilder {
     };
 
     // Phase 1: satisfy requirements. Anchor each row on the most specific open
-    // requirement (most pinned axes). Pack the broad ones onto that anchor when
+    // requirement (most pinned axes), ties broken by the shuffled order above.
+    // Pack the broad ones onto that anchor when
     // `requirePacking` is 'always', or (for 'when-needed') only when the
     // leftover budget is too tight to give every open requirement its own row;
     // otherwise leave the anchor's other axes to random pair-coverage. Forced
@@ -580,10 +602,10 @@ class MatrixBuilder {
 
     const problems = [];
     if (infeasible.length > 0) {
-      problems.push(`unsatisfiable: ${infeasible.map(r => JSON.stringify(r.filter)).join(', ')}`);
+      problems.push(`unsatisfiable: ${asDeclared(infeasible).map(r => JSON.stringify(r.filter)).join(', ')}`);
     }
     if (pending.length > 0) {
-      problems.push(`did not fit into ${maxRows} rows: ${pending.map(r => JSON.stringify(r.filter)).join(', ')}`);
+      problems.push(`did not fit into ${maxRows} rows: ${asDeclared(pending).map(r => JSON.stringify(r.filter)).join(', ')}`);
     }
     if (problems.length > 0) {
       const msg = `generateRows could not satisfy all requirements (${problems.join('; ')})`;
