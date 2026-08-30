@@ -39,13 +39,27 @@ class Axis {
     return row === filter;
   }
 
-  pickValue(filter, random = Math.random) {
-    let values = this.values;
-    if (filter) {
-      values = values.filter(v => Axis.matches(v, filter));
+  /**
+   * Values of this axis that the filter admits, in declaration order. `undefined` and
+   * `null` mean no filter; every other value is one to honor, including `0`, `false` and
+   * `''`. Testing the filter for truth instead dropped those three, so generation ignored
+   * the pin and a requirement holding one of them was met only when the draw agreed.
+   * @param filter value filter, or undefined for no filter
+   * @returns {Array} the admitted values, empty when the filter admits none
+   */
+  candidateValues(filter) {
+    if (filter === undefined || filter === null) {
+      return this.values;
     }
+    return this.values.filter(v => Axis.matches(v, filter));
+  }
+
+  pickValue(filter, random = Math.random) {
+    const values = this.candidateValues(filter);
     if (values.length === 0) {
-      const filterStr = typeof filter === 'string' ? filter.toString() : JSON.stringify(filter);
+      const filterStr = typeof filter === 'string' || typeof filter === 'function'
+        ? String(filter)
+        : JSON.stringify(filter);
       throw Error(`No values produced for axis '${this.name}' from ${JSON.stringify(this.values)}, filter=${filterStr}`);
     }
     return values[Math.floor(random() * values.length)];
@@ -244,13 +258,18 @@ class MatrixBuilder {
    */
   _generateCandidate(filter) {
     for (let attempt = 0; attempt < 20; attempt++) {
-      const row = this.axes.reduce(
-        (prev, next) =>
-          Object.assign(prev, {
-            [next.name]: next.pickValue(filter ? filter[next.name] : undefined, this._random)
-          }),
-        {}
-      );
+      const row = {};
+      for (const axis of this.axes) {
+        const values = axis.candidateValues(filter ? filter[axis.name] : undefined);
+        if (values.length === 0) {
+          // The filter admits no value of this axis: a misspelled value, or a predicate
+          // that matches none. Report it as a row that cannot be generated, so the caller
+          // that knows which requirement it belongs to warns or throws for it. Letting
+          // pickValue throw from here would carry it past that caller instead.
+          return null;
+        }
+        row[axis.name] = values[Math.floor(this._random() * values.length)];
+      }
       if (this.matches(row)) {
         return row;
       }
@@ -509,6 +528,13 @@ class MatrixBuilder {
    * result again, e.g. a single coverage job:
    *   {filter: {os: {value: 'ubuntu-latest'}, ...}, tag: r => r.collectCoverage = true}
    *
+   * An unsatisfied requirement warns, or throws when
+   * failOnUnsatisfiableFilters(true) is set. A tagged one always throws: the tag
+   * marks a row that a later job keys on, so dropping it would leave a matrix
+   * that looks complete while that job never runs. Tagged requirements also
+   * claim the row budget first, so which requirement is dropped under a tight
+   * budget does not depend on the seed.
+   *
    * Rows generated earlier (e.g. a pinned row from generateRow()) count toward
    * both the budget and requirement satisfaction.
    *
@@ -539,7 +565,26 @@ class MatrixBuilder {
       throw new Error(`Invalid requirePacking: ${JSON.stringify(requirePacking)}. Expected 'when-needed' or 'always'.`);
     }
 
+    // JSON.stringify drops a function, so a filter written entirely as predicates would
+    // print as {} — the shape the README recommends for a version bound — and an entry that
+    // carries a tag but no filter would print as nothing at all.
+    const renderFilter = filter => filter === undefined
+      ? '(no filter)'
+      : JSON.stringify(filter, (key, value) => typeof value === 'function' ? String(value) : value);
+
+    // Phase 1 works from the rows left rather than from maxRows, so the budget a failure
+    // needs counts the rows pinned before this call as well.
+    const rowsAtStart = this.rows.length;
     const pending = this._normalizeRequirements(requireSpecs);
+    for (const req of pending) {
+      if (req.tag && req.filter === undefined) {
+        // Nothing matches an absent filter, so this entry is fatal below on the tagged
+        // path. Name it here, where the entry is still recognizable as the one written.
+        this._reportConfigProblem(
+          'A require entry with a tag needs a filter: {filter: {...}, tag: row => ...}');
+      }
+    }
+    const taggedRequired = pending.filter(req => req.tag).length;
     // Phase 1 consumes `pending` in order, and that order decides which
     // requirement anchors a row and which one gets packed onto somebody else's
     // anchor. A fixed order therefore biases the same requirement into the same
@@ -558,11 +603,17 @@ class MatrixBuilder {
     // delta, so packing requirements into as few rows as possible always wins;
     // ties break on coverage.
     const BONUS = 1000;
-    const requirementBonus = candidate => {
+    // `preferTagged` makes one tagged match outweigh every untagged match combined, so a
+    // row that saves a tagged requirement beats one that saves several untagged ones:
+    // dropping a tagged requirement throws, while dropping an untagged one warns. It is
+    // switched on only while the budget cannot give every open tagged requirement a row of
+    // its own. Left on unconditionally, a packed row chases the tagged requirement it could
+    // safely have left alone, and the tagged row loses its varied partner for nothing.
+    const requirementBonus = preferTagged => candidate => {
       let n = 0;
       for (const req of pending) {
         if (Axis.matches(candidate, req.filter)) {
-          n++;
+          n += preferTagged && req.tag ? pending.length + 1 : 1;
         }
       }
       return n * BONUS;
@@ -579,11 +630,24 @@ class MatrixBuilder {
     // 'when-needed' we pay that price only when the budget makes it unavoidable
     // (see issue #11).
     while (this.rows.length < maxRows && pending.length > 0) {
-      const anchor = pending.reduce((a, b) =>
+      // A tagged requirement is fatal below, so the budget reserves a row for each one that
+      // is still open, and untagged requirements anchor only out of what is left over.
+      // Anchoring the tagged ones first instead would satisfy them just as reliably and
+      // cost them their variety: the anchor is the row that carries the packing bonus, so
+      // tagged-first aims every forced pairing at the row the caller reasons about, which
+      // is issue #11 again along a new axis.
+      const remaining = maxRows - this.rows.length;
+      const tagged = pending.filter(req => req.tag);
+      const untagged = pending.filter(req => !req.tag);
+      const taggedAtRisk = remaining - 1 < tagged.length;
+      const group = untagged.length > 0 && !taggedAtRisk ? untagged
+        : (tagged.length > 0 ? tagged : untagged);
+      // Within the group the most specific filter anchors, since a filter that pins more
+      // axes has the fewest rows that can carry it. Ties go to the shuffled order above.
+      const anchor = group.reduce((a, b) =>
         this._filterKeyCount(b.filter) > this._filterKeyCount(a.filter) ? b : a);
-      const mustPack = requirePacking === 'always'
-        || pending.length > maxRows - this.rows.length;
-      const row = this._addBestRow(anchor.filter, mustPack ? requirementBonus : null);
+      const mustPack = requirePacking === 'always' || pending.length > remaining;
+      const row = this._addBestRow(anchor.filter, mustPack ? requirementBonus(taggedAtRisk) : null);
       if (!row) {
         infeasible.push(anchor);
         pending.splice(pending.indexOf(anchor), 1);
@@ -593,6 +657,18 @@ class MatrixBuilder {
     }
 
     // Phase 2: spend the remaining budget on plain pairwise coverage.
+    // A fill filter that admits no value of an axis makes every candidate row impossible.
+    // Phase 2 asks for its rows with warnings off, so it would stop on the first attempt and
+    // return a short matrix with nothing said. Report it the way a misspelled fill key is.
+    if (fillFilter && typeof fillFilter === 'object' && !Array.isArray(fillFilter)) {
+      for (const [name, value] of Object.entries(fillFilter)) {
+        const axis = this.axisByName[name];
+        if (axis && axis.candidateValues(value).length === 0) {
+          this._reportConfigProblem(
+            `The fill filter admits no value of axis '${name}': ${renderFilter(fillFilter)}`);
+        }
+      }
+    }
     for (let i = 0; this.rows.length < maxRows && i < maxRows; i++) {
       const row = this.generateRow(fillFilter, {warnOnFailure: false});
       if (!row) {
@@ -600,15 +676,32 @@ class MatrixBuilder {
       }
     }
 
+    const describe = reqs => asDeclared(reqs).map(r => renderFilter(r.filter)).join(', ');
     const problems = [];
     if (infeasible.length > 0) {
-      problems.push(`unsatisfiable: ${asDeclared(infeasible).map(r => JSON.stringify(r.filter)).join(', ')}`);
+      problems.push(`unsatisfiable: ${describe(infeasible)}`);
     }
     if (pending.length > 0) {
-      problems.push(`did not fit into ${maxRows} rows: ${asDeclared(pending).map(r => JSON.stringify(r.filter)).join(', ')}`);
+      problems.push(`did not fit into ${maxRows} rows: ${describe(pending)}`);
     }
     if (problems.length > 0) {
       const msg = `generateRows could not satisfy all requirements (${problems.join('; ')})`;
+      // A tag marks the row a later job keys on: the one that uploads coverage, publishes
+      // artifacts, or reports the release build. Warning about a dropped tagged requirement
+      // leaves a matrix that looks complete while that job silently never runs, so the tag
+      // makes the requirement fatal whether or not failOnUnsatisfiableFilters is set.
+      const tagged = asDeclared([...infeasible, ...pending]).filter(req => req.tag);
+      if (tagged.length > 0) {
+        const budgetFloor = rowsAtStart + taggedRequired;
+        const pinnedNote = rowsAtStart > 0 ? `, plus the ${rowsAtStart} pinned before this call` : '';
+        const budgetAdvice = maxRows < budgetFloor
+          ? `Requirements sharing rows are packed greedily, which can strand one even where a `
+            + `packing exists, so raise the row budget to ${budgetFloor} — one row per tagged `
+            + `requirement${pinnedNote} — or relax the filter.`
+          : 'Raise the row budget, or relax the filter.';
+        throw Error(`${msg}. A tagged requirement marks a row that a later job keys on, so it cannot be dropped: `
+          + `${describe(tagged)}. ${budgetAdvice}`);
+      }
       if (this._failOnUnsatisfiableFilters) {
         throw Error(msg);
       } else {
