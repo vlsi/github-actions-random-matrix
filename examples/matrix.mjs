@@ -53,24 +53,46 @@ matrix.addAxis({
 matrix.addAxis({
   name: 'os',
   // Drop the -latest suffix from the job name.
-  title: x => x.replace('-latest', ''),
+  title: x => (x.value || x).replace('-latest', ''),
   values: [
-    'ubuntu-latest',
-    'windows-latest',
-    'macos-latest'
+    // The require list below runs every OS at least once; these weights lean the
+    // remaining rows toward ubuntu, by roughly the shift a ratio of 4 buys. Windows and
+    // macOS minutes are billed at 2x and 10x of Linux on private repositories, and both
+    // are slower per job. See "Job count and cost" in the README for what the lean is
+    // worth, and drop a value from the axis where a lean is not enough.
+    {value: 'ubuntu-latest', weight: 4},
+    {value: 'windows-latest', weight: 1},
+    {value: 'macos-latest', weight: 1}
   ]
 });
+
+// Run some jobs with assertions on. -ea enables the asserts in your own code and in the
+// libraries you compile against, and it costs only the jobs that carry it.
+matrix.addAxis({
+  name: 'assertions',
+  title: x => x.value === 'yes' ? 'assertions' : '',
+  values: [
+    {value: 'yes', weight: 3},
+    {value: 'no', weight: 10}
+  ]
+});
+
+// Your own configuration belongs on axes too. Every option your users can set — feature
+// flags, compilation modes, protocol versions, cache modes, timeouts — is a dimension you
+// ship and rarely test in combination. See "Choosing axes" in the README.
 
 // Test Java code when Object#hashCode returns the same value for different objects.
 // This can uncover hidden assumptions such as "object.toString is usually unique".
 matrix.addAxis({
   name: 'hash',
   values: [
-    // The regular case is the common one, so weight it heavily. An empty title keeps
-    // the usual case out of the job name.
+    // The regular case is the common one, so give it the larger weight. Weight leans the
+    // fill toward a value rather than fixing a rate, and most of the lean arrives by a
+    // ratio of about 4; on these axes 42 buys a few points more. An empty title keeps the
+    // usual case out of the job name.
     {value: 'regular', title: '', weight: 42},
-    // The same-hashcode case is rare, so weight it down. Its title marks the job so a
-    // failure is easier to spot.
+    // The same-hashcode case is rare. Its title marks the job so a failure is easier to
+    // spot; the require list below, not the weight, is what guarantees it appears.
     {value: 'same', title: 'same hashcode', weight: 1}
   ]
 });
@@ -87,7 +109,7 @@ matrix.addAxis({
 });
 
 // Order the axis titles in the job name. Individual titles join with a comma.
-matrix.setNamePattern(['java_version', 'java_distribution', 'hash', 'os', 'tz', 'locale']);
+matrix.setNamePattern(['java_version', 'java_distribution', 'hash', 'assertions', 'os', 'tz', 'locale']);
 
 // Microsoft Java has no distribution for 8.
 matrix.exclude({java_distribution: 'microsoft', java_version: '8'});
@@ -101,6 +123,8 @@ const include = matrix.generateRows(Number(process.env.MATRIX_JOBS || 5), {
   require: [
     // Keep at least one same-hashcode job.
     {hash: {value: 'same'}},
+    // Keep at least one job with assertions on.
+    {assertions: {value: 'yes'}},
     // Run every OS at least once.
     ...matrix.allAxisValues('os'),
     // Cover the oldest and newest supported Java.
@@ -121,12 +145,18 @@ include.forEach(v => {
   if (v.hash.value === 'same') {
     jvmArgs.push('-XX:+UnlockExperimentalVMOptions', '-XX:hashCode=2');
   }
+  if (v.assertions.value === 'yes') {
+    jvmArgs.push('-ea');
+  }
   // Gradle does not work in the tr_TR locale, so pass the locale to the tests only:
   // https://github.com/gradle/gradle/issues/17361
   jvmArgs.push(`-Duser.country=${v.locale.country}`);
   jvmArgs.push(`-Duser.language=${v.locale.language}`);
   v.testExtraJvmArgs = jvmArgs.join(' ');
+  // runs-on takes the plain string, and the axis objects have served their purpose.
+  v.os = v.os.value;
   delete v.hash;
+  delete v.assertions;
 });
 
 // Run with --coverage to preview pair coverage and tune MATRIX_JOBS without emitting
