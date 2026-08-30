@@ -388,7 +388,10 @@ describe('generateRows with batch requirements', () => {
     const partners = {1: new Set(), 4: new Set()};
     const firstRowA = new Set();
     for (let seed = 1; seed <= 24; seed++) {
-      const m = buildAB(createTestRng(seed));
+      // Spread the seeds. createTestRng is an LCG seeded by its own state, so consecutive
+      // small seeds differ by 1664525/2^31 on the first draw and share the first swap of
+      // Phase 1's Fisher-Yates shuffle, which is the draw this test is about.
+      const m = buildAB(createTestRng(seed * 7919));
       let rowA1, rowA4;
       m.generateRows(3, {
         require: [
@@ -524,6 +527,310 @@ describe('generateRows with batch requirements', () => {
     m.failOnUnsatisfiableFilters(true);
     assert.throws(() => m.generateRows(5, {require: [{os: 'linux'}], fil: {}}),
       /unknown option/);
+  });
+
+  it('throws on an unsatisfiable tagged requirement even when other failures only warn', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    m.exclude({os: 'windows'});
+    // failOnUnsatisfiableFilters is left off: the tag alone makes this fatal.
+    assert.throws(
+      () => m.generateRows(5, {require: [{filter: {os: 'windows'}, tag: r => { r.tagged = true; }}]}),
+      /tagged requirement/);
+  });
+
+  it('throws when a tagged requirement does not fit the row budget', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    assert.throws(
+      () => m.generateRows(1, {
+        // One row cannot carry two values of the same axis, so whichever of these anchors
+        // it, the other is dropped — and both are tagged.
+        require: [
+          {filter: {os: 'linux'}, tag: r => { r.taggedLinux = true; }},
+          {filter: {os: 'windows'}, tag: r => { r.taggedWindows = true; }},
+        ],
+      }),
+      /tagged requirement/);
+  });
+
+  it('anchors a tagged requirement ahead of the untagged ones that may be dropped', () => {
+    // Three one-axis requirements into two rows: one is dropped. The anchor used to be
+    // chosen on specificity alone, with ties broken by Phase 1's seeded shuffle, so the
+    // tagged requirement lost the budget race on some seeds and generateRows threw on
+    // those seeds alone — the same script failing on one pull request number and passing
+    // on the next. Before the fix this threw on 15 of these 40 seeds.
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(message);
+    let dropped = 0;
+    try {
+      for (let seed = 1; seed <= 40; seed++) {
+        const m = buildSimpleMatrix(createTestRng(seed * 7919));
+        let tagged = null;
+        const before = warnings.length;
+        m.generateRows(2, {
+          require: [
+            {os: 'linux'},
+            {os: 'windows'},
+            {filter: {os: 'mac'}, tag: r => { tagged = r; }},
+          ],
+        });
+        assert.ok(tagged, `seed ${seed}: the tagged requirement went unsatisfied`);
+        assert.equal(tagged.os, 'mac');
+        if (warnings.length > before) {
+          dropped++;
+        }
+      }
+    } finally {
+      console.warn = originalWarn;
+    }
+    // Two rows hold two of the three requirements, so an untagged one is dropped on every
+    // seed. Without that the loop would never reach the race this test is about.
+    assert.equal(dropped, 40, `expected every seed to drop an untagged requirement, got ${dropped}`);
+  });
+
+  it('keeps a tagged requirement a row could still carry, over untagged competitors', () => {
+    // One row; two tagged requirements that a single row can satisfy together ({a:1,c:1}
+    // and {b:1}); three untagged ones that pull the other way. Scoring every requirement
+    // the same made the packer take the row covering three untagged requirements and drop
+    // the feasible tagged one, so every seed threw.
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(message);
+    try {
+      for (let seed = 1; seed <= 40; seed++) {
+        const m = new MatrixBuilder({random: createTestRng(seed * 7919)});
+        m.addAxis({name: 'a', values: [0, 1]});
+        m.addAxis({name: 'b', values: [0, 1]});
+        m.addAxis({name: 'c', values: [0, 1]});
+        m.addAxis({name: 'd', values: [0, 1]});
+        m.setNamePattern(['a', 'b', 'c', 'd']);
+        let first = null;
+        let second = null;
+        m.generateRows(1, {
+          require: [
+            {filter: {a: 1, c: 1}, tag: r => { first = r; }},
+            {filter: {b: 1}, tag: r => { second = r; }},
+            {b: 0},
+            {b: 0, c: 1},
+            {b: 0, d: 0},
+          ],
+        });
+        assert.ok(first && second, `seed ${seed}: a tagged requirement was dropped`);
+        assert.equal(m.rows.length, 1);
+      }
+    } finally {
+      console.warn = originalWarn;
+    }
+    // The three untagged requirements cannot fit that one row, so every seed drops some.
+    // Without that the packer never feels the pressure this test is about.
+    assert.equal(warnings.length, 40,
+      `expected one dropped-requirement warning per seed, got ${warnings.length}`);
+  });
+
+  it('reports a fill filter that admits no value', () => {
+    // Phase 2 asks for its rows with warnings off, so a fill value the axis does not have
+    // stopped the coverage fill on its first attempt and returned a short matrix in silence.
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(message);
+    const m = buildSimpleMatrix(createTestRng());
+    try {
+      m.generateRows(6, {require: [{os: 'mac'}], fill: {os: 'lnux'}});
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(warnings.some(w => /fill filter admits no value of axis 'os'/.test(w)),
+      `expected a fill-filter warning, got: ${warnings}`);
+  });
+
+  it('names a require entry that carries a tag and no filter', () => {
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(message);
+    const m = buildSimpleMatrix(createTestRng());
+    try {
+      // Nothing matches an absent filter, so the entry is fatal on the tagged path. Both
+      // the warning and the error have to name it; the error used to list it as nothing.
+      assert.throws(() => m.generateRows(3, {require: [{tag: r => { r.tagged = true; }}]}),
+        /\(no filter\)/);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(warnings.some(w => /a tag needs a filter/.test(w)),
+      `expected a config warning, got: ${warnings}`);
+  });
+
+  it('names the budget the failure needs, counting rows pinned before the call', () => {
+    // The number is what turns this failure into an action. Phase 1 works from the rows
+    // left rather than from maxRows, so a matrix with rows pinned by hand reaches the same
+    // failure at a larger maxRows — and guarding the advice on maxRows alone dropped the
+    // number exactly there, where maxRows already looks big enough.
+    const requirements = [
+      {filter: {a: 1, d: 0}, tag: () => {}},
+      {filter: {a: 1, d: 1}, tag: () => {}},
+      {filter: {a: 1, c: 0, d: 0}, tag: () => {}},
+      {filter: {a: 1, b: 0, c: 1}, tag: () => {}},
+    ];
+    const build = () => {
+      const m = new MatrixBuilder({random: createTestRng(7919)});
+      for (const name of ['a', 'b', 'c', 'd']) {
+        m.addAxis({name, values: [0, 1]});
+      }
+      m.setNamePattern(['a', 'b', 'c', 'd']);
+      return m;
+    };
+    assert.throws(() => build().generateRows(2, {require: requirements}),
+      /raise the row budget to 4 /);
+
+    const pinned = build();
+    // Neither pinned row carries a:1, so neither satisfies a requirement; they only spend
+    // budget, which is the case the advice has to account for.
+    pinned.generateRow({a: 0, b: 0});
+    pinned.generateRow({a: 0, b: 1});
+    assert.throws(() => pinned.generateRows(4, {require: requirements}),
+      /raise the row budget to 6 .*plus the 2 pinned before this call/);
+  });
+
+  it('holds every tagged requirement when the budget is one row each', () => {
+    // Tagged requirements that must share rows are packed greedily, so a budget below one
+    // row each can strand one even where a packing exists. At one row each the reserve
+    // makes that unreachable, which is the guarantee the README states.
+    const requirements = [
+      {filter: {d: 0}, tag: () => {}},
+      {filter: {d: 1}, tag: () => {}},
+      {filter: {c: 0, d: 0}, tag: () => {}},
+      {filter: {b: 0, c: 1}, tag: () => {}},
+    ];
+    const build = seed => {
+      const m = new MatrixBuilder({random: createTestRng(seed * 7919)});
+      for (const name of ['b', 'c', 'd']) {
+        m.addAxis({name, values: [0, 1]});
+      }
+      m.setNamePattern(['b', 'c', 'd']);
+      return m;
+    };
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    let tight = 0;
+    try {
+      for (let seed = 1; seed <= 40; seed++) {
+        try {
+          build(seed).generateRows(2, {require: requirements});
+        } catch (e) {
+          tight++;
+        }
+        // One row per tagged requirement: this must not throw on any seed.
+        build(seed).generateRows(requirements.length, {require: requirements});
+      }
+    } finally {
+      console.warn = originalWarn;
+    }
+    // Without a seed that fails at two rows, the loop would pass on a packer that never
+    // packs at all, and the guarantee would be untested.
+    assert.ok(tight > 0, 'no seed exercised the tight budget');
+  });
+
+  it('reports a filter that admits no value through generateRows', () => {
+    // A filter admitting no value of an axis — a misspelling, a falsy pin, or a predicate
+    // matching none — escaped as `No values produced for axis ...` thrown out of pickValue,
+    // past the caller that knows which requirement it belongs to: no rows, no warning, and
+    // no flag that changed it.
+    for (const filter of [{os: 0}, {os: 'lnux'}, {jdk: v => Number(v) >= 99}]) {
+      const shape = JSON.stringify(filter);
+      const warnings = [];
+      const originalWarn = console.warn;
+      console.warn = message => warnings.push(message);
+      const m = buildSimpleMatrix(createTestRng());
+      try {
+        m.generateRows(4, {require: [filter]});
+      } finally {
+        console.warn = originalWarn;
+      }
+      assert.equal(m.rows.length, 4, `${shape}: the coverage fill stopped`);
+      assert.ok(warnings.some(w => /unsatisfiable/.test(w)),
+        `${shape}: expected an unsatisfiable warning, got: ${warnings}`);
+    }
+  });
+
+  it('names a predicate filter in the diagnostic', () => {
+    // JSON.stringify drops a function, so a filter written entirely as predicates printed
+    // as {} — and a version bound is exactly the case the README writes that way.
+    const m = buildSimpleMatrix(createTestRng());
+    m.failOnUnsatisfiableFilters(true);
+    assert.throws(
+      () => m.generateRows(4, {require: [{jdk: v => Number(v) >= 99}]}),
+      /Number\(v\) >= 99/);
+  });
+
+  it('honors a filter that pins a falsy value', () => {
+    // pickValue tested its filter for truth, so a pin on 0, false or '' was dropped and the
+    // axis was drawn at random. The requirement then held only when the draw agreed, which
+    // for a tagged one is a throw on some seeds and not on others, at any row budget.
+    for (let seed = 1; seed <= 40; seed++) {
+      const m = new MatrixBuilder({random: createTestRng(seed * 7919)});
+      m.addAxis({name: 'x', values: [0, 1, 2, 3]});
+      m.addAxis({name: 'flag', values: [false, true]});
+      m.addAxis({name: 'label', values: ['', 'a', 'b']});
+      m.setNamePattern(['x']);
+      let tagged = null;
+      m.generateRows(5, {
+        require: [{filter: {x: 0, flag: false, label: ''}, tag: r => { tagged = r; }}],
+      });
+      assert.ok(tagged, `seed ${seed}: the falsy pin was dropped`);
+      assert.equal(tagged.x, 0);
+      assert.equal(tagged.flag, false);
+      assert.equal(tagged.label, '');
+    }
+  });
+
+  it('does not aim forced packing at the tagged row', () => {
+    // Four requirements into three rows, one of them tagged, so the pigeonhole forces a
+    // pairing. The anchor is the row that carries the packing bonus, so anchoring tagged
+    // requirements first aimed that pairing at the tagged row on every one of these seeds.
+    // Reserving a row for it instead leaves it free to draw a varied partner.
+    let free = 0;
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      for (let seed = 1; seed <= 120; seed++) {
+        const m = new MatrixBuilder({random: createTestRng(seed * 7919)});
+        m.addAxis({name: 'a', values: [1, 2, 3, 4]});
+        m.addAxis({name: 'b', values: ['a', 'b', 'c', 'd', 'e', 'f']});
+        m.setNamePattern(['a', 'b']);
+        let tagged = null;
+        m.generateRows(3, {
+          require: [
+            {filter: {a: 1}, tag: r => { tagged = r; }},
+            {a: 4},
+            {b: 'a'},
+            {b: 'b'},
+          ],
+        });
+        assert.ok(tagged, `seed ${seed}: the tagged requirement went unsatisfied`);
+        if (!['a', 'b'].includes(tagged.b)) {
+          free++;
+        }
+      }
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(free >= 24,
+      `the tagged row carried a required partner on ${120 - free} of 120 seeds`);
+  });
+
+  it('keeps warning for an untagged requirement that does not fit the budget', () => {
+    const m = buildSimpleMatrix(createTestRng());
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = message => warnings.push(message);
+    try {
+      m.generateRows(1, {require: [{os: 'linux', jdk: '17'}, {os: 'windows'}]});
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(
+      warnings.some(w => /did not fit/.test(w)),
+      `expected a warning about the dropped requirement, got: ${warnings}`);
   });
 });
 
